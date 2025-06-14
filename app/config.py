@@ -41,8 +41,8 @@ class Settings(BaseSettings):
     available_models: List[str] = ["llama3.2", "gpt-4o-mini"]
 
     # RAG Configuration
-    chunk_size: int = 1000
-    chunk_overlap: int = 200
+    chunk_size: int = 1000  # ~140-150 words per chunk (better context)
+    chunk_overlap: int = 200  # ~30 words overlap (maintains context between chunks)
 
     class Config:
         env_file = ".env"

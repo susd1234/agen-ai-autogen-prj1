@@ -76,9 +76,11 @@ class AgentSystem:
             self.config_list = [
                 {
                     "model": "llama3.2:latest",
-                    "base_url": model_config["base_url"],
+                    "base_url": model_config["base_url"]
+                    + "/v1",  # Add /v1 for OpenAI compatibility
                     "api_key": "ollama",  # Ollama doesn't require real API key
                     "api_type": "openai",  # Use OpenAI-compatible API format
+                    "price": [0.0, 0.0],  # Free local model - no cost
                 }
             ]
         else:
@@ -125,11 +127,15 @@ class AgentSystem:
         # Create Question Answering Specialist with timeout protection
         self.qa_specialist = autogen.AssistantAgent(
             name="QA_Specialist",
-            system_message="""You are a question-answering specialist. Your role is to:
-            1. Understand user questions
-            2. Formulate effective queries for the RAG system
-            3. Analyze and refine answers
-            4. Provide clear and accurate responses""",
+            system_message="""You are a document analysis specialist. Your role is to:
+            1. Analyze questions about uploaded documents ONLY
+            2. Provide insights based on document content
+            3. Focus on document-specific analysis and findings
+            4. Do NOT provide generic responses or ask for clarification
+            5. If the question is about documents, provide specific analysis
+            6. Keep responses focused and document-relevant
+            
+            IMPORTANT: Only respond with document analysis. Do not ask questions back to the user.""",
             llm_config={
                 "config_list": self.config_list,
                 "timeout": 30,  # 30 second timeout to prevent hanging
@@ -218,7 +224,7 @@ class AgentSystem:
         Workflow:
         1. User proxy initiates question with QA specialist
         2. QA specialist coordinates with RAG coordinator for information
-        3. Timeout protection ensures system doesn't hang
+        3. Capture and return the actual agent responses
 
         Args:
             question (str): User's question about the processed documents
@@ -226,7 +232,8 @@ class AgentSystem:
         Returns:
             Dict containing:
                 - status: Processing result status
-                - message: Human-readable status message
+                - message: The actual agent response content
+                - conversation: Full conversation history
 
         Performance Notes:
             - Time: ~2-5 seconds for agent reasoning
@@ -238,27 +245,51 @@ class AgentSystem:
             including multi-step analysis, context understanding, and answer refinement.
         """
         try:
+            print(f"🤖 AGENT: Starting conversation for question: {question}")
+
             # Initiate agent conversation for question answering
             # QA specialist will analyze the question and coordinate response
-            chat_initiator = self.user_proxy.initiate_chat(
+            chat_result = self.user_proxy.initiate_chat(
                 self.qa_specialist,
                 message=f"Please answer this question: {question}",
                 max_turns=2,  # Allow brief back-and-forth but prevent loops
             )
 
-            # QA specialist coordinates with RAG coordinator for comprehensive response
-            # This provides enhanced reasoning beyond simple RAG retrieval
-            self.qa_specialist.initiate_chat(
-                self.rag_coordinator,
-                message=f"Need information for question: {question}",
-                max_turns=1,  # Single coordination turn
-            )
+            print(f"🤖 AGENT: Chat completed, extracting response...")
 
-            return {"status": "success", "message": "Question answered successfully"}
+            # Extract the actual response from the conversation
+            agent_response = ""
+            if hasattr(chat_result, "chat_history") and chat_result.chat_history:
+                # Get the last message from QA specialist
+                for message in reversed(chat_result.chat_history):
+                    if message.get("name") == "QA_Specialist" and message.get(
+                        "content"
+                    ):
+                        agent_response = message["content"]
+                        print(f"🤖 AGENT RESPONSE: {agent_response[:200]}...")
+                        break
+
+            # If no response found in chat history, try alternative extraction
+            if not agent_response and hasattr(chat_result, "summary"):
+                agent_response = chat_result.summary
+                print(f"🤖 AGENT SUMMARY: {agent_response[:200]}...")
+
+            # Fallback: get any available response
+            if not agent_response:
+                agent_response = (
+                    "Agent provided analysis but response extraction failed"
+                )
+                print("🤖 AGENT: Could not extract specific response, using fallback")
+
+            return {
+                "status": "success",
+                "message": agent_response,
+                "conversation": getattr(chat_result, "chat_history", []),
+            }
 
         except Exception as e:
             # Graceful fallback if agent system encounters issues
-            print(f"Agent question processing warning: {str(e)}")
+            print(f"❌ AGENT ERROR: {str(e)}")
             return {
                 "status": "warning",
                 "message": f"Agent processing had issues: {str(e)}",

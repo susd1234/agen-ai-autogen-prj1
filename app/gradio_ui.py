@@ -2,12 +2,12 @@
 Gradio UI for the Agentic RAG Application.
 
 This module provides a web interface for document upload and question answering.
-Key optimization: Uses deferred processing to minimize upload time.
+Implementation: Immediate RAG processing during upload for ready-to-query vector database.
 
-Performance Strategy:
-- Upload: Only save file and extract text (~2 seconds)
-- First Question: Process documents with RAG + initialize agents (~10-15 seconds one-time)
-- Subsequent Questions: Use existing systems (normal speed)
+Processing Strategy:
+- Upload: Complete RAG pipeline (save, extract, chunk, embed, store) (~10-15 seconds)
+- First Question: Initialize agents + query pre-built vector store (~5-10 seconds)
+- Subsequent Questions: Fast queries against existing vector database (~2-5 seconds)
 """
 
 import gradio as gr
@@ -29,15 +29,43 @@ agent_system = None
 uploaded_files = []
 
 
+def _is_generic_response(response: str) -> bool:
+    """
+    Check if agent response is generic/irrelevant and should be filtered out.
+
+    Args:
+        response (str): Agent response text
+
+    Returns:
+        bool: True if response should be filtered out
+    """
+    generic_phrases = [
+        "you've entered a single space",
+        "please rephrase or provide more context",
+        "I'm happy to continue",
+        "Could you please rephrase",
+        "Let me know, and I'll do my best",
+        "Is there a specific topic",
+        "Are you thinking of",
+        "Do you have something else in mind",
+        "I can suggest some questions",
+        "feeling stuck",
+        "better understand what you're looking for",
+    ]
+
+    response_lower = response.lower()
+    return any(phrase.lower() in response_lower for phrase in generic_phrases)
+
+
 def upload_document_gradio(file):
     """
-    Handle document upload with optimized processing strategy.
+    Handle document upload with immediate RAG processing.
 
-    This function implements a deferred processing approach for maximum upload speed:
-    1. Save file to disk (fast)
-    2. Extract text content (fast)
-    3. Skip RAG processing (deferred until first question)
-    4. Skip agent initialization (deferred until first question)
+    This function processes documents completely during upload:
+    1. Save file to disk
+    2. Extract text content
+    3. Process with RAG engine (chunking, embedding, vector storage)
+    4. Store in vector database for immediate querying
 
     Args:
         file: Gradio file object containing the uploaded document
@@ -46,8 +74,8 @@ def upload_document_gradio(file):
         str: Status message with upload time and processing info
 
     Performance Impact:
-        - Before optimization: 30+ seconds (due to RAG + agent processing)
-        - After optimization: ~2 seconds (only file ops + text extraction)
+        Complete processing during upload including vector embeddings and database storage.
+        Upload time: ~10-15 seconds (includes full RAG pipeline)
     """
     start_time = time.time()
 
@@ -89,32 +117,22 @@ def upload_document_gradio(file):
         extract_time = time.time()
         print(f"✅ Text extracted in {extract_time - save_time:.2f}s")
 
-        # OPTIMIZATION: Skip heavy processing during upload
-        # This is the key performance improvement - defer expensive operations
-        print("⚡ Skipping RAG processing during upload for faster response")
+        # PHASE 3: RAG Processing (Full pipeline - 5-10 seconds)
+        # Process documents immediately with complete RAG pipeline:
+        # - Document chunking and text splitting
+        # - Vector embedding generation
+        # - Chroma vector database creation/update
+        # - Document indexing for retrieval
+        print("⏱️ Processing with RAG engine (chunking, embedding, vector storage)...")
+        rag_engine.process_documents(texts)
+        rag_time = time.time()
+        print(f"✅ RAG processing completed in {rag_time - extract_time:.2f}s")
 
-        # DEFERRED: RAG processing (would add 5-10 seconds)
-        # - Vector embedding creation
-        # - Chroma database initialization
-        # - Document chunking and indexing
-        # This will happen during the first question instead
-        # print("⏱️ Processing with RAG engine...")
-        # rag_engine.process_documents(texts)
-        # rag_time = time.time()
-        # print(f"✅ RAG processing completed in {rag_time - extract_time:.2f}s")
-
-        # DEFERRED: Agent system processing (would add 20-30 seconds)
-        # - AutoGen agent initialization
-        # - LLM configuration and connection
-        # - Agent conversation setup
-        # This will happen during the first question instead
-        # agent_system.process_documents([file_path])
-
-        # Track uploaded files for later processing
+        # Track uploaded files for agent processing
         uploaded_files.append(file_path)
 
         total_time = time.time() - start_time
-        return f"✅ Successfully uploaded: {original_filename} (took {total_time:.2f}s) - RAG processing deferred"
+        return f"✅ Successfully processed: {original_filename} (took {total_time:.2f}s) - Ready for questions!"
 
     except Exception as e:
         error_time = time.time() - start_time
@@ -124,15 +142,10 @@ def upload_document_gradio(file):
 
 def ask_question_gradio(question, model_name):
     """
-    Handle question answering with deferred document processing.
+    Handle question answering using pre-processed documents.
 
-    This function implements the second phase of the optimization strategy:
-    1. Process documents with RAG engine (first question only)
-    2. Initialize agent system (first question only)
-    3. Generate answer using both RAG and agents
-
-    The heavy processing that was skipped during upload happens here on the first question.
-    Subsequent questions use the already-initialized systems for fast responses.
+    Since documents are now fully processed during upload (including RAG pipeline),
+    this function focuses on question answering and agent initialization.
 
     Args:
         question (str): User's question about the uploaded documents
@@ -142,66 +155,67 @@ def ask_question_gradio(question, model_name):
         tuple: (answer_text, sources_text) for display in Gradio interface
 
     Performance Impact:
-        - First question: ~10-15 seconds (one-time setup + answer generation)
+        - First question: ~5-10 seconds (agent initialization + answer generation)
         - Subsequent questions: Normal speed (~2-5 seconds)
-
-    Design Rationale:
-        This deferred approach provides better UX by giving immediate upload feedback
-        while doing heavy processing only when actually needed for questions.
     """
     global agent_system
 
     if not uploaded_files:
         return "⚠️ Please upload a document first.", ""
 
+    # Check if RAG engine is ready (should be ready since processing happens during upload)
+    if rag_engine.vector_store is None:
+        return "⚠️ Documents not yet processed. Please upload a document first.", ""
+
     try:
-        # DEFERRED PROCESSING: RAG Engine Setup (First Question Only)
-        # This is where the heavy RAG processing happens that was skipped during upload
-        if rag_engine.vector_store is None:
-            print("⏱️ Processing uploaded documents for RAG...")
-            print("📄 This happens only once - subsequent questions will be faster")
-
-            # Extract and combine text from all uploaded documents
-            all_texts = []
-            for file_path in uploaded_files:
-                texts = document_processor.extract_text(file_path)
-                all_texts.extend(texts)
-
-            # Perform expensive RAG operations:
-            # - Text chunking and splitting
-            # - Vector embedding generation (using Ollama/OpenAI)
-            # - Chroma vector database creation
-            # - Document indexing for retrieval
-            rag_engine.process_documents(all_texts)
-            print("✅ RAG processing completed")
-
-        # Generate answer using RAG engine
-        # This queries the vector database and generates response using LLM
+        # Generate answer using RAG engine (documents already processed)
+        # This queries the pre-built vector database and generates response using LLM
+        print("🔍 Querying RAG engine...")
         rag_response = rag_engine.query(question, model_name)
 
-        # DEFERRED PROCESSING: Agent System Setup (First Question Only)
-        # Initialize the AutoGen agent system that was skipped during upload
-        if agent_system is None:
-            print("⏱️ Initializing agent system...")
-            print("🤖 Setting up AutoGen agents with LLM configurations...")
+        # DEFERRED: Agent System Setup (First Question Only)
+        # Initialize the AutoGen agent system for enhanced reasoning
+        agent_response = None
+        try:
+            if agent_system is None:
+                print("⏱️ Initializing agent system...")
+                print("🤖 Setting up AutoGen agents with LLM configurations...")
 
-            # This involves:
-            # - Creating multiple AutoGen agents (Document Processor, QA Specialist, RAG Coordinator)
-            # - Configuring LLM connections (Ollama/OpenAI)
-            # - Setting up agent conversation workflows
-            # - Validating agent configurations
-            agent_system = AgentSystem()
-            print("✅ Agent system initialized")
+                # This involves:
+                # - Creating multiple AutoGen agents (Document Processor, QA Specialist, RAG Coordinator)
+                # - Configuring LLM connections (Ollama/OpenAI)
+                # - Setting up agent conversation workflows
+                # - Validating agent configurations
+                agent_system = AgentSystem()
 
-        # Generate additional insights using agent system
-        # Agents provide enhanced reasoning and multi-step analysis
-        agent_response = agent_system.answer_question(question)
+                # Process documents with agent system
+                agent_system.process_documents(uploaded_files)
+                print("✅ Agent system initialized")
+
+            # Generate additional insights using agent system
+            # Agents provide enhanced reasoning and multi-step analysis
+            print("🤖 Getting agent insights...")
+            agent_response = agent_system.answer_question(question)
+        except Exception as e:
+            print(f"⚠️ Agent system failed, continuing with RAG only: {str(e)}")
+            agent_response = None
 
         # Format response for Gradio interface
         answer = rag_response["answer"]
         sources = rag_response["source_documents"]
         sources_str = "\n".join([f"📄 {str(s)}" for s in sources])
 
+        # Format agent response for readability
+        if agent_response:
+            print(f"🤖 AGENT RESPONSE:")
+            print(f"Status: {agent_response.get('status', 'unknown')}")
+            print(f"Message: {agent_response.get('message', '')}")
+            if "conversation" in agent_response:
+                print("Conversation History:")
+                for msg in agent_response["conversation"]:
+                    print(f"- {msg}")
+        else:
+            print("🤖 No agent response available")
         return answer, sources_str
 
     except Exception as e:
@@ -216,21 +230,25 @@ with gr.Blocks(title="Agentic RAG Application", theme=gr.themes.Soft()) as demo:
     # Agentic RAG Application
     
     This application allows you to upload documents and ask questions about their content. 
-    The system uses advanced RAG (Retrieval-Augmented Generation) and AI agents to provide accurate answers.
+    The system uses advanced RAG (Retrieval-Augmented Generation) with immediate processing:
+    - **Upload**: Documents are chunked, embedded, and stored in vector database (~10-15 seconds)
+    - **Questions**: Fast retrieval from pre-processed vector store with AI agent analysis
     """
     )
 
     with gr.Row():
         with gr.Column(scale=1):
             gr.Markdown("### 📤 Document Upload")
-            gr.Markdown("Upload your documents in PDF, DOCX, or TXT format.")
+            gr.Markdown(
+                "Upload your documents in PDF, DOCX, or TXT format. Processing includes chunking, embedding, and vector storage."
+            )
             file_input = gr.File(
                 label="Upload Document",
                 file_types=[".pdf", ".docx", ".txt"],
                 type="binary",
                 file_count="single",
             )
-            upload_btn = gr.Button("Upload and Process", variant="primary")
+            upload_btn = gr.Button("Upload & Process with RAG", variant="primary")
             upload_output = gr.Textbox(
                 label="Upload Status", interactive=False, show_copy_button=True
             )

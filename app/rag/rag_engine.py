@@ -14,14 +14,116 @@ Performance Impact:
 """
 
 from typing import List, Dict
+import requests
+import json
+import logging
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_openai import ChatOpenAI
 from langchain.chains import RetrievalQA
 from langchain_community.llms import Ollama
-from langchain_ollama import OllamaEmbeddings
+from langchain_core.embeddings import Embeddings
 from app.config import CHUNK_SIZE, CHUNK_OVERLAP, VECTOR_DB_DIR, AGENT_CONFIG
+
+
+class CustomOllamaEmbeddings(Embeddings):
+    """Custom Ollama embeddings class that directly calls the Ollama API with parallel processing."""
+
+    def __init__(
+        self, model: str, base_url: str = "http://localhost:11434", max_workers: int = 4
+    ):
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+        self.max_workers = max_workers
+
+    def _embed_single_text(self, text: str) -> List[float]:
+        """Embed a single text using Ollama API."""
+        # Show first 100 characters of the text being embedded
+        text_preview = text[:100] + "..." if len(text) > 100 else text
+        print(
+            f"🔗 EMBED: Processing text chunk (length: {len(text)} chars): {text_preview}"
+        )
+
+        response = requests.post(
+            f"{self.base_url}/api/embeddings",
+            json={"model": self.model, "prompt": text},
+            headers={"Content-Type": "application/json"},
+            timeout=30,
+        )
+        if response.status_code == 200:
+            embedding = response.json()["embedding"]
+            print(
+                f"✅ EMBED: Got embedding with {len(embedding)} dimensions for text starting with: {text[:50]}..."
+            )
+            return embedding
+        else:
+            error_msg = f"Ollama API error: {response.status_code} - {response.text}"
+            print(f"❌ EMBED: {error_msg} for text: {text_preview}")
+            raise Exception(error_msg)
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        """Embed a list of documents using parallel processing."""
+        start_time = time.time()
+        total_texts = len(texts)
+        print(
+            f"🔄 EMBED: Starting embedding generation for {total_texts} text chunks..."
+        )
+        logging.info(
+            f"🔄 Starting embedding generation for {total_texts} text chunks..."
+        )
+
+        embeddings = [None] * total_texts  # Pre-allocate list to maintain order
+
+        print(f"⚡ EMBED: Using {self.max_workers} parallel workers")
+        # Use ThreadPoolExecutor for parallel processing
+        submit_start = time.time()
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            print("🚀 EMBED: Submitting all embedding tasks...")
+            # Submit all tasks
+            future_to_index = {
+                executor.submit(self._embed_single_text, text): idx
+                for idx, text in enumerate(texts)
+            }
+            submit_time = time.time() - submit_start
+            print(
+                f"📤 EMBED: Submitted {len(future_to_index)} tasks to executor in {submit_time:.2f}s"
+            )
+
+            completed = 0
+            processing_start = time.time()
+            for future in as_completed(future_to_index):
+                idx = future_to_index[future]
+                try:
+                    embedding = future.result()
+                    embeddings[idx] = embedding
+                    completed += 1
+                    if completed % 5 == 0 or completed == total_texts:
+                        elapsed = time.time() - processing_start
+                        rate = completed / elapsed if elapsed > 0 else 0
+                        progress_msg = f"📊 Embedded {completed}/{total_texts} chunks ({completed/total_texts*100:.1f}%) at {rate:.1f} chunks/sec"
+                        print(progress_msg)
+                        logging.info(progress_msg)
+                except Exception as e:
+                    error_msg = f"❌ Failed to embed chunk {idx}: {e}"
+                    print(error_msg)
+                    logging.error(error_msg)
+                    raise
+
+        total_time = time.time() - start_time
+        success_msg = f"✅ Completed embedding generation for all {total_texts} chunks in {total_time:.2f}s!"
+        print(success_msg)
+        logging.info(success_msg)
+        return embeddings
+
+    def embed_query(self, text: str) -> List[float]:
+        """Embed a single query."""
+        logging.info("🔍 Embedding query...")
+        result = self._embed_single_text(text)
+        logging.info("✅ Query embedded successfully!")
+        return result
 
 
 class RAGEngine:
@@ -83,8 +185,9 @@ class RAGEngine:
             # Choose embedding model based on current configuration
             if AGENT_CONFIG["model"] == "llama3.2":
                 # Use local Ollama embeddings for privacy and speed
-                self.embeddings = OllamaEmbeddings(
-                    model="bge-m3", base_url="http://localhost:11434"
+                self.embeddings = CustomOllamaEmbeddings(
+                    model="bge-m3",
+                    base_url="http://localhost:11434",
                 )
             else:
                 # Use OpenAI embeddings for cloud-based models
@@ -177,22 +280,61 @@ class RAGEngine:
             - First call: ~5-10 seconds (embedding model + vector creation)
             - Subsequent calls: ~2-3 seconds (reuses embedding model)
         """
+        print(f"📄 RAG: Starting document processing for {len(texts)} documents...")
+        logging.info(f"📄 Starting document processing for {len(texts)} documents...")
+
+        # Show total text length
+        total_text_length = sum(len(text) for text in texts)
+        print(f"📊 RAG: Total text length: {total_text_length} characters")
+
+        print(
+            f"✂️ RAG: Splitting texts into chunks (chunk_size={CHUNK_SIZE}, overlap={CHUNK_OVERLAP})..."
+        )
         # Split texts into chunks for optimal retrieval
         # Smaller chunks = better precision, larger chunks = better context
+        logging.info("✂️ Splitting texts into chunks...")
         chunks = self.text_splitter.create_documents(texts)
+        print(f"📋 RAG: Created {len(chunks)} text chunks for processing")
+        logging.info(f"📋 Created {len(chunks)} text chunks for processing")
 
+        # Print details about the chunks
+        for i, chunk in enumerate(chunks[:5]):  # Show first 5 chunks
+            chunk_text = (
+                chunk.page_content[:200] + "..."
+                if len(chunk.page_content) > 200
+                else chunk.page_content
+            )
+            print(f"📄 CHUNK {i+1}: {chunk_text}")
+        if len(chunks) > 5:
+            print(f"... and {len(chunks) - 5} more chunks")
+
+        print("🔄 RAG: Getting embeddings instance...")
+        # Get embeddings instance first (this initializes it)
+        embeddings = self._get_embeddings()
+        print("✅ RAG: Embeddings instance ready")
+
+        print(
+            "🔄 RAG: Creating vector store with embeddings (this may take a while)..."
+        )
         # Create or update vector store with lazy embedding initialization
         # This is where the deferred embedding model gets initialized
+        logging.info(
+            "🔄 Creating vector store with embeddings (this may take a while)..."
+        )
         self.vector_store = Chroma.from_documents(
             documents=chunks,
-            embedding=self._get_embeddings(),
+            embedding=embeddings,
             persist_directory=VECTOR_DB_DIR,
         )
+        print("✅ RAG: Vector store created successfully!")
+        logging.info("✅ Vector store created successfully!")
 
         # OPTIMIZATION: Defer QA chain initialization until first query
         # This saves 2-3 seconds during document processing
         # The QA chain will be created when query() is first called
         self.qa_chain = None  # Will be initialized on first query
+        print("🚀 RAG: Document processing complete! Ready for queries.")
+        logging.info("🚀 Document processing complete! Ready for queries.")
 
     def query(self, question: str, model_name: str = None) -> Dict:
         """
