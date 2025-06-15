@@ -1,6 +1,6 @@
 # Agentic RAG App Using AutoGen Framework and OLLAMA
 
-An intelligent application that combines Retrieval-Augmented Generation (RAG) with autonomous agents to provide enhanced document processing and question answering capabilities.
+An intelligent application that combines Retrieval-Augmented Generation (RAG) with autonomous agents (Agentic AI) to provide enhanced document processing and question answering capabilities.
 
 ## Features
 
@@ -11,11 +11,13 @@ An intelligent application that combines Retrieval-Augmented Generation (RAG) wi
 - FastAPI backend with Gradio UI
 - Document storage and vector database integration
 
+## APP UI
+![UI Screenshot](app/static/APP%20UI.jpg)
+
 ## Prerequisites
 
 - Python 3.9+
-- OpenAI API key
-- (Optional) Local Llama model server
+- Local Llama model server
 
 ## Installation
 
@@ -28,7 +30,7 @@ cd agen-ai-autogen-prj1
 2. Create and activate a virtual environment:
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+source .venv/bin/activate 
 ```
 
 3. Install dependencies:
@@ -38,8 +40,7 @@ pip install -r requirements.txt
 
 4. Create a `.env` file in the project root:
 ```env
-OPENAI_API_KEY=your_api_key_here
-DEBUG=False
+OPENAI_API_KEY=your_api_key_here (In case use GPT Model)
 ```
 
 ## Project Structure
@@ -101,30 +102,7 @@ response = requests.post(
 )
 ```
 
-## Development
-
-### Running Tests
-
-```bash
-pytest
-```
-
-### Code Style
-
-The project follows PEP 8 guidelines. Use black for code formatting:
-
-```bash
-black .
-```
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License.
