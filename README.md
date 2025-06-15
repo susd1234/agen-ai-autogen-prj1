@@ -1,4 +1,4 @@
-# Agentic RAG App Using AutoGen Framework and OLLAMA
+# Agentic RAG Application Using AutoGen Framework and OLLAMA
 
 An intelligent application that combines Retrieval-Augmented Generation (RAG) with autonomous agents (Agentic AI) to provide enhanced document processing and question answering capabilities.
 
